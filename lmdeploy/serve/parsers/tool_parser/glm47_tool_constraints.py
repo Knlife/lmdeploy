@@ -2,7 +2,8 @@
 """Token-aware argument-name constraints for GLM automatic tool calls.
 
 Constrain declared top-level names for plain object schemas. This is not full
-JSON Schema validation: required fields, duplicates and values retain their
+JSON Schema validation: required names form an unordered prefix before optional
+arguments and cannot repeat. Values and optional-name duplicates retain their
 existing behavior. Explicitly open or composed schemas stay open. Auto choice
 still permits reasoning, ordinary text, zero calls and multiple calls.
 
@@ -21,6 +22,38 @@ def _closed_properties(schema):
             or any(key in schema for key in ('$ref', 'allOf', 'anyOf', 'oneOf', 'patternProperties'))):
         return None
     return tuple(properties)
+
+
+def _required_argument_format(keys, required, ids):
+    import json
+
+    from xgrammar.structural_tag import GrammarFormat
+
+    required = tuple(dict.fromkeys(required))
+    if len(required) > 8:
+        raise ValueError('GLM auto required-name constraints support at most 8 required fields')
+    if any(name not in keys for name in required):
+        raise ValueError('Required GLM argument names must be declared properties')
+    bit = {name: 1 << index for index, name in enumerate(required)}
+    lines = [f'root ::= state-{(1 << len(required)) - 1}', r'ws ::= [ \t-\r]*']
+    excluded = ', '.join(str(value) for value in ids.values())
+    lines.append(f'value ::= ExcludeToken({excluded})*')
+    for index, name in enumerate(keys):
+        lines.append(
+            f'arg-{index} ::= Token({ids["<arg_key>"]}) ws {json.dumps(name, ensure_ascii=False)} '
+            f'ws Token({ids["</arg_key>"]}) ws Token({ids["<arg_value>"]}) '
+            f'value Token({ids["</arg_value>"]}) ws')
+    # A state records which required names have not appeared yet. Only state 0
+    # is nullable. While names are missing, every complete argument clears one
+    # missing bit; optional/repeated names cannot postpone required arguments.
+    for missing in range(1 << len(required)):
+        choices = [f'arg-{index} state-{missing & ~bit.get(name, 0)}'
+                   for index, name in enumerate(keys)
+                   if (missing & bit.get(name, 0)) or (missing == 0 and name not in bit)]
+        if missing == 0:
+            choices.append('""')
+        lines.append(f'state-{missing} ::= ' + ' | '.join(choices))
+    return GrammarFormat(grammar='\n'.join(lines))
 
 
 def build_auto_tool_format(tools, tokenizer):
@@ -60,9 +93,12 @@ def build_auto_tool_format(tools, tokenizer):
             AnyTokensFormat(exclude_tokens=boundaries), token('</arg_value>'),
             RegexFormat(pattern=r'\s*'),
         ])
+        required = function.parameters.get('required', []) if keys is not None else []
+        arguments = (_required_argument_format(keys, required, ids) if required
+                     else StarFormat(content=pair))
         bodies.append(SequenceFormat(elements=[
             RegexFormat(pattern=r'\s*'), ConstStringFormat(value=function.name),
-            RegexFormat(pattern=r'\s*'), StarFormat(content=pair), token('</tool_call>'),
+            RegexFormat(pattern=r'\s*'), arguments, token('</tool_call>'),
         ]))
     return StructuralTag(format=TokenDispatchFormat(
         rules=[(ids['<tool_call>'], either(bodies))], loop=True,
