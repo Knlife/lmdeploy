@@ -113,6 +113,11 @@ class ToolParser:
         return request
 
     @classmethod
+    def build_auto_response_format(cls, tools: list[Tool], *, tokenizer) -> dict[str, Any] | None:
+        """Optionally constrain auto tool calls without requiring a call."""
+        return None
+
+    @classmethod
     def build_required_response_format(cls, tools: list[Tool], *, reasoning: bool) -> dict[str, Any]:
         """Build the XGrammar structural-tag format for required tool calls."""
         structural_tag_model = cls.structural_tag_model

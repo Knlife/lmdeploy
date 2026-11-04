@@ -29,6 +29,12 @@ class Glm47ToolParser(XmlToolParser):
     arg_value_close_prefixes = ()
 
     @classmethod
+    def build_auto_response_format(cls, tools, *, tokenizer):
+        from .glm47_tool_constraints import build_auto_tool_format
+
+        return build_auto_tool_format(tools, tokenizer)
+
+    @classmethod
     def get_tool_open_tag(cls) -> str | None:
         return '<tool_call>'
 
