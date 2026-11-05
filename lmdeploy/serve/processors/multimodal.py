@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 import PIL
 
-from lmdeploy.model import MODELS, BaseChatTemplate
+from lmdeploy.model import MODELS, BaseChatTemplate, HFChatTemplate
 from lmdeploy.tokenizer import Tokenizer
 from lmdeploy.utils import get_logger
 from lmdeploy.vl.constants import Modality
@@ -55,17 +55,19 @@ class MultimodalProcessor:
         self.allowed_media_domains = allowed_media_domains
 
     @staticmethod
-    def merge_message_content(msg: dict) -> dict:
+    def merge_message_content(msg: dict, text_separator: str = '\n') -> dict:
         """Merge multimodal content blocks and ensure content field exists.
 
         This function normalizes message content to match vLLM's behavior:
         1. Missing content field -> add content='' (empty string)
         2. None content -> convert to content='' (empty string)
         3. String content -> return as-is
-        4. List content (multimodal) -> merge all text blocks with newline separator
+        4. List content (multimodal) -> merge all text blocks with the given separator
 
         Args:
             msg: A message dict with 'role' and optionally 'content' field
+            text_separator: Separator between text blocks. Defaults to a newline;
+                use an empty string for templates that concatenate text blocks.
 
         Returns:
             A message dict with 'content' field guaranteed to exist
@@ -93,12 +95,12 @@ class MultimodalProcessor:
             return msg
 
         # If content is a list, merge all text blocks into a single string
-        # This matches vLLM's behavior: text_prompt = "\n".join(texts)
+        # The default matches vLLM; some templates concatenate blocks directly.
         content_parts = []
         for block in msg['content']:
             if isinstance(block, dict) and block.get('type') == 'text':
                 content_parts.append(block.get('text', ''))
-        merged_content = '\n'.join(content_parts)
+        merged_content = text_separator.join(content_parts)
 
         # Preserve all other fields in the message (e.g., tool_calls)
         result = dict(msg)
@@ -394,9 +396,6 @@ class MultimodalProcessor:
                                      chat_template_kwargs: dict | None = None,
                                      **kwargs):
         """Process text-only prompt and return prompt string and input_ids."""
-        # Change multimodal data to openai text messages
-        if isinstance(prompt, list):
-            prompt = [self.merge_message_content(msg) for msg in prompt]
         if do_preprocess:
             # use adapter's chat template if possible
             chat_template = self.chat_template
@@ -404,6 +403,11 @@ class MultimodalProcessor:
                 chat_template = MODELS.module_dict[adapter_name]()
         else:
             chat_template = BaseChatTemplate()
+        # GLM-5.3-Flash's visible_text macro concatenates blocks without adding
+        # whitespace. Match it even when no media sends the request to this path.
+        if isinstance(prompt, list):
+            text_separator = '' if isinstance(chat_template, HFChatTemplate) and chat_template.is_glm5_next else '\n'
+            prompt = [self.merge_message_content(msg, text_separator) for msg in prompt]
         chat_template_kwargs = dict(chat_template_kwargs or {})
         template_reasoning_effort = reasoning_effort
         if template_reasoning_effort is None:
